@@ -404,30 +404,6 @@ class _MoodTrackingPageState extends State<MoodTrackingPage>
                   moodEntries: state.moodEntries,
                   selectedTimeRange: 'Aylık',
                   onTimeRangeChanged: (timeRange) {
-                    final now = DateTime.now();
-                    DateTime startDate;
-                    DateTime endDate = now;
-
-                    switch (timeRange) {
-                      case 'Günlük':
-                        startDate = now;
-                        break;
-                      case 'Haftalık':
-                        startDate = now.subtract(const Duration(days: 7));
-                        break;
-                      case 'Aylık':
-                        startDate = now.subtract(const Duration(days: 30));
-                        break;
-                      case '3 Aylık':
-                        startDate = now.subtract(const Duration(days: 90));
-                        break;
-                      case 'Yıllık':
-                        startDate = now.subtract(const Duration(days: 365));
-                        break;
-                      default:
-                        startDate = now.subtract(const Duration(days: 30));
-                    }
-
                     context.read<MoodBloc>().add(
                       GetUserMoodEntriesEvent(userId: widget.userId),
                     );
@@ -555,11 +531,17 @@ class _MoodTrackingPageState extends State<MoodTrackingPage>
   void _saveMoodEntry(dynamic existingEntry) async {
     if (_selectedMoodEmoji == null) return;
     
+    // Context'i async işlemden önce sakla
+    final navigator = Navigator.of(context);
+    final moodBloc = context.read<MoodBloc>();
+    
     // Mevcut konumu al
     String? locationString;
     try {
       final position = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.high,
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.high,
+        ),
       );
       locationString = '${position.latitude},${position.longitude}';
     } catch (e) {
@@ -569,7 +551,7 @@ class _MoodTrackingPageState extends State<MoodTrackingPage>
     
     if (existingEntry != null) {
       // Güncelleme
-      context.read<MoodBloc>().add(
+      moodBloc.add(
         UpdateMoodEntryEvent(
           id: existingEntry.id,
           userId: widget.userId,
@@ -583,7 +565,7 @@ class _MoodTrackingPageState extends State<MoodTrackingPage>
       );
     } else {
       // Yeni ekleme
-      context.read<MoodBloc>().add(
+      moodBloc.add(
         AddMoodEntryEvent(
           userId: widget.userId,
           moodEmoji: _selectedMoodEmoji!,
@@ -595,7 +577,7 @@ class _MoodTrackingPageState extends State<MoodTrackingPage>
       );
     }
     
-    Navigator.pop(context);
+    navigator.pop();
     _descriptionController.clear();
     setState(() {
       _selectedMoodEmoji = null;
@@ -616,8 +598,10 @@ class _MoodTrackingPageState extends State<MoodTrackingPage>
           ),
           TextButton(
             onPressed: () {
-              context.read<MoodBloc>().add(DeleteMoodEntryEvent(id: id));
-              Navigator.pop(context);
+              final navigator = Navigator.of(context);
+              final moodBloc = context.read<MoodBloc>();
+              moodBloc.add(DeleteMoodEntryEvent(id: id));
+              navigator.pop();
             },
             child: const Text('Sil', style: TextStyle(color: Colors.red)),
           ),

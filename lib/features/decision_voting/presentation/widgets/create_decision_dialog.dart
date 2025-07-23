@@ -11,10 +11,10 @@ class CreateDecisionDialog extends StatefulWidget {
   const CreateDecisionDialog({super.key, this.decision});
 
   @override
-  _CreateDecisionDialogState createState() => _CreateDecisionDialogState();
+  CreateDecisionDialogState createState() => CreateDecisionDialogState();
 }
 
-class _CreateDecisionDialogState extends State<CreateDecisionDialog> {
+class CreateDecisionDialogState extends State<CreateDecisionDialog> {
   final _formKey = GlobalKey<FormState>();
   late TextEditingController _titleController;
   late TextEditingController _descriptionController;

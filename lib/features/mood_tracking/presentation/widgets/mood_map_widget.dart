@@ -120,8 +120,10 @@ class _MoodMapWidgetState extends State<MoodMapWidget> {
       
       // Şimdi güncel konumu al
       final position = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.high,
-        timeLimit: const Duration(seconds: 15),
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.high,
+          timeLimit: Duration(seconds: 15),
+        ),
       );
       
       debugPrint('Güncel konum alındı: ${position.latitude}, ${position.longitude}');
@@ -338,31 +340,31 @@ class _MoodMapWidgetState extends State<MoodMapWidget> {
       );
     } catch (e) {
       debugPrint('GoogleMap widget oluşturma hatası: $e');
-      return Container(
+      return SizedBox(
         height: 400,
         child: Center(
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(
+              const Icon(
                 Icons.error_outline,
                 size: 64,
                 color: Colors.red,
               ),
-              SizedBox(height: 16),
-              Text(
+              const SizedBox(height: 16),
+              const Text(
                 'Harita yüklenemedi',
                 style: TextStyle(
                   fontSize: 18,
                   fontWeight: FontWeight.bold,
                 ),
               ),
-              SizedBox(height: 8),
+              const SizedBox(height: 8),
               Text(
                 'Google Maps API yapılandırmasını kontrol edin',
                 style: TextStyle(
                   fontSize: 14,
-                  color: Colors.grey[600],
+                  color: Colors.grey.shade600,
                 ),
                 textAlign: TextAlign.center,
               ),
@@ -421,7 +423,7 @@ class _MoodMapWidgetState extends State<MoodMapWidget> {
     
     return Container(
       padding: const EdgeInsets.all(16),
-      color: AppTheme.primaryColor.withOpacity(0.1),
+      color: AppTheme.primaryColor.withValues(alpha: 0.1),
       child: Row(
         children: [
           const Icon(
