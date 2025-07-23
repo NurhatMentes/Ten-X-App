@@ -26,6 +26,7 @@ dependencies:
   
   # State Management
   flutter_bloc: ^8.1.6
+  provider: ^6.1.2
   equatable: ^2.0.5
   
   # UI & Navigation
@@ -34,6 +35,7 @@ dependencies:
   
   # Location & Image
   geolocator: ^13.0.1
+  google_maps_flutter: ^2.5.3
   image_picker: ^1.1.2
   
   # Utilities

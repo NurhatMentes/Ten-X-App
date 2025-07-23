@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:geolocator/geolocator.dart';
 
 import '../../../../core/constants/app_theme.dart';
 import '../../../../core/utils/date_utils.dart';
@@ -7,8 +8,8 @@ import '../bloc/mood_bloc.dart';
 import '../bloc/mood_event.dart';
 import '../bloc/mood_state.dart';
 import '../widgets/mood_selector.dart';
-
 import '../widgets/mood_statistics_widget.dart';
+import '../widgets/mood_map_widget.dart';
 
 /// Ruh hali takibi ana sayfası
 class MoodTrackingPage extends StatefulWidget {
@@ -36,28 +37,42 @@ class _MoodTrackingPageState extends State<MoodTrackingPage>
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 3, vsync: this);
+    _tabController = TabController(length: 4, vsync: this);
     
-    // Bugünkü ruh hali girişini yükle
-    context.read<MoodBloc>().add(
-      GetTodayMoodEntryEvent(userId: widget.userId),
-    );
+    // Tab değişikliklerini dinle
+    _tabController.addListener(() {
+      if (!_tabController.indexIsChanging) {
+        _loadDataForCurrentTab();
+      }
+    });
     
-    // Kullanıcının tüm ruh hali girişlerini yükle
-    context.read<MoodBloc>().add(
-      GetUserMoodEntriesEvent(userId: widget.userId),
-    );
+    // İlk yükleme
+    _loadDataForCurrentTab();
+  }
+  
+  /// Mevcut sekme için gerekli verileri yükle
+  void _loadDataForCurrentTab() {
+    // Sadece ilk yüklemede veya tab değişiminde gerekli verileri yükle
+    final currentState = context.read<MoodBloc>().state;
     
-    // Son 30 günün istatistiklerini yükle
-    final now = DateTime.now();
-    final thirtyDaysAgo = now.subtract(const Duration(days: 30));
-    context.read<MoodBloc>().add(
-      GetUserMoodStatsEvent(
-        userId: widget.userId,
-        startDate: thirtyDaysAgo,
-        endDate: now,
-      ),
-    );
+    switch (_tabController.index) {
+      case 0: // Bugün
+        if (currentState is! TodayMoodEntryLoaded) {
+          context.read<MoodBloc>().add(
+            GetTodayMoodEntryEvent(userId: widget.userId),
+          );
+        }
+        break;
+      case 1: // Geçmiş
+      case 2: // İstatistikler
+      case 3: // Harita
+        if (currentState is! UserMoodEntriesLoaded) {
+          context.read<MoodBloc>().add(
+            GetUserMoodEntriesEvent(userId: widget.userId),
+          );
+        }
+        break;
+    }
   }
   
   @override
@@ -83,6 +98,7 @@ class _MoodTrackingPageState extends State<MoodTrackingPage>
             Tab(text: 'Bugün', icon: Icon(Icons.today)),
             Tab(text: 'Geçmiş', icon: Icon(Icons.history)),
             Tab(text: 'İstatistikler', icon: Icon(Icons.analytics)),
+            Tab(text: 'Harita', icon: Icon(Icons.map)),
           ],
         ),
       ),
@@ -92,8 +108,25 @@ class _MoodTrackingPageState extends State<MoodTrackingPage>
           _buildTodayTab(),
           _buildHistoryTab(),
           _buildStatsTab(),
+          _buildMapTab(),
         ],
       ),
+    );
+  }
+  
+  /// Harita sekmesi
+  Widget _buildMapTab() {
+    return BlocBuilder<MoodBloc, MoodState>(
+      builder: (context, state) {
+        // Sadece veri yüklenmemişse yükle
+        if (state is! UserMoodEntriesLoaded && state is! MoodLoading) {
+          context.read<MoodBloc>().add(
+            GetUserMoodEntriesEvent(userId: widget.userId),
+          );
+        }
+        
+        return MoodMapWidget(userId: widget.userId);
+      },
     );
   }
   
@@ -245,6 +278,13 @@ class _MoodTrackingPageState extends State<MoodTrackingPage>
   Widget _buildHistoryTab() {
     return BlocBuilder<MoodBloc, MoodState>(
       builder: (context, state) {
+        // Önce kullanıcının mood entries'lerini yükle
+        if (state is! UserMoodEntriesLoaded && state is! MoodLoading) {
+          context.read<MoodBloc>().add(
+            GetUserMoodEntriesEvent(userId: widget.userId),
+          );
+        }
+        
         if (state is UserMoodEntriesLoaded) {
           if (state.moodEntries.isEmpty) {
             return const Center(
@@ -339,7 +379,14 @@ class _MoodTrackingPageState extends State<MoodTrackingPage>
   Widget _buildStatsTab() {
     return BlocBuilder<MoodBloc, MoodState>(
       builder: (context, state) {
-        if (state is UserMoodStatsLoaded) {
+        // Önce kullanıcının mood entries'lerini yükle
+        if (state is! UserMoodEntriesLoaded && state is! MoodLoading) {
+          context.read<MoodBloc>().add(
+            GetUserMoodEntriesEvent(userId: widget.userId),
+          );
+        }
+        
+        if (state is UserMoodEntriesLoaded) {
           return SingleChildScrollView(
             padding: const EdgeInsets.all(16),
             child: Column(
@@ -354,78 +401,37 @@ class _MoodTrackingPageState extends State<MoodTrackingPage>
                 const SizedBox(height: 16),
                 
                 MoodStatisticsWidget(
-                  moodEntries: [],
-                  selectedTimeRange: 'Haftalık',
+                  moodEntries: state.moodEntries,
+                  selectedTimeRange: 'Aylık',
                   onTimeRangeChanged: (timeRange) {
-final now = DateTime.now();
-DateTime startDate;
-DateTime endDate = now;
+                    final now = DateTime.now();
+                    DateTime startDate;
+                    DateTime endDate = now;
 
-switch (timeRange) {
-  case 'Günlük':
-    startDate = now;
-    break;
-  case 'Haftalık':
-    startDate = now.subtract(const Duration(days: 7));
-    break;
-  case 'Aylık':
-    startDate = now.subtract(const Duration(days: 30));
-    break;
-  default:
-    startDate = now.subtract(const Duration(days: 7));
-}
+                    switch (timeRange) {
+                      case 'Günlük':
+                        startDate = now;
+                        break;
+                      case 'Haftalık':
+                        startDate = now.subtract(const Duration(days: 7));
+                        break;
+                      case 'Aylık':
+                        startDate = now.subtract(const Duration(days: 30));
+                        break;
+                      case '3 Aylık':
+                        startDate = now.subtract(const Duration(days: 90));
+                        break;
+                      case 'Yıllık':
+                        startDate = now.subtract(const Duration(days: 365));
+                        break;
+                      default:
+                        startDate = now.subtract(const Duration(days: 30));
+                    }
 
-context.read<MoodBloc>().add(
-  GetUserMoodStatsEvent(
-    userId: widget.userId,
-    startDate: startDate,
-    endDate: endDate,
-  ),
-);
+                    context.read<MoodBloc>().add(
+                      GetUserMoodEntriesEvent(userId: widget.userId),
+                    );
                   },
-                ),
-                
-                const SizedBox(height: 24),
-                
-                // İstatistik detayları
-                Card(
-                  child: Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'Detaylı İstatistikler',
-                          style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        const SizedBox(height: 12),
-                        
-                        ...state.stats.entries.map((entry) {
-                          final percentage = (entry.value / state.stats.values.reduce((a, b) => a + b) * 100).toStringAsFixed(1);
-                          return Padding(
-                            padding: const EdgeInsets.symmetric(vertical: 4),
-                            child: Row(
-                              children: [
-                                Text(
-                                  entry.key,
-                                  style: const TextStyle(fontSize: 24),
-                                ),
-                                const SizedBox(width: 12),
-                                Expanded(
-                                  child: Text(
-                                    '${entry.value} kez (%$percentage)',
-                                    style: Theme.of(context).textTheme.bodyMedium,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          );
-                        }),
-                      ],
-                    ),
-                  ),
                 ),
               ],
             ),
@@ -546,8 +552,20 @@ context.read<MoodBloc>().add(
   }
   
   /// Ruh hali girişini kaydet
-  void _saveMoodEntry(dynamic existingEntry) {
+  void _saveMoodEntry(dynamic existingEntry) async {
     if (_selectedMoodEmoji == null) return;
+    
+    // Mevcut konumu al
+    String? locationString;
+    try {
+      final position = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+      );
+      locationString = '${position.latitude},${position.longitude}';
+    } catch (e) {
+      debugPrint('Konum alınamadı: $e');
+      // Konum alınamazsa null bırak
+    }
     
     if (existingEntry != null) {
       // Güncelleme
@@ -560,6 +578,7 @@ context.read<MoodBloc>().add(
               ? null
               : _descriptionController.text.trim(),
           createdAt: existingEntry.createdAt,
+          location: locationString,
         ),
       );
     } else {
@@ -571,6 +590,7 @@ context.read<MoodBloc>().add(
           description: _descriptionController.text.trim().isEmpty
               ? null
               : _descriptionController.text.trim(),
+          location: locationString,
         ),
       );
     }
