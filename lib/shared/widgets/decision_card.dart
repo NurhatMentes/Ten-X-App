@@ -140,7 +140,7 @@ class DecisionCard extends StatelessWidget {
                     vertical: 4,
                   ),
                   decoration: BoxDecoration(
-                    color: _getStatusColor().withOpacity(0.2),
+                    color: _getStatusColor().withValues(alpha: 0.2),
                     borderRadius: BorderRadius.circular(8),
                     border: Border.all(
                       color: _getStatusColor(),

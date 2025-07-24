@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../shared/widgets/decision_card.dart';
 import '../shared/widgets/create_decision_dialog.dart';
 import '../features/decision_diary/models/decision.dart';
+import '../features/mood_tracking/presentation/pages/mood_tracking_page.dart';
 
 class DecisionListScreen extends StatefulWidget {
   const DecisionListScreen({super.key});
@@ -39,6 +40,17 @@ class _DecisionListScreenState extends State<DecisionListScreen> {
         title: const Text('Ten-X Kararlarım'),
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
         actions: [
+          IconButton(
+            icon: const Icon(Icons.mood),
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => const MoodTrackingPage(userId: 'demo_user'),
+                ),
+              );
+            },
+          ),
           IconButton(
             icon: const Icon(Icons.search),
             onPressed: () {

@@ -5,10 +5,10 @@ class DecisionFilterWidget extends StatelessWidget {
   final Function(String?) onCategoryChanged;
 
   const DecisionFilterWidget({
-    Key? key,
+    super.key,
     this.selectedCategory,
     required this.onCategoryChanged,
-  }) : super(key: key);
+  });
 
   static const List<String> categories = [
     'Genel',
