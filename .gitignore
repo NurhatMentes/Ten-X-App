@@ -43,3 +43,7 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Project specific files to keep local only
+10x_app_prompt.md
+.trae/rules/project_rules.md
