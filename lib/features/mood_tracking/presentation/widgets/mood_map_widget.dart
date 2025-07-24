@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'dart:ui' as ui;
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -6,6 +8,7 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import '../../domain/entities/mood_entry.dart';
 import '../bloc/mood_bloc.dart';
 import '../bloc/mood_state.dart';
+import '../bloc/mood_event.dart';
 import '../../../../core/constants/app_theme.dart';
 
 /// Ruh hali haritası widget'ı
@@ -29,6 +32,15 @@ class _MoodMapWidgetState extends State<MoodMapWidget> {
   
   /// Kullanıcının konumu
   Position? _currentPosition;
+  
+  /// Emoji marker cache'i (performans için)
+  final Map<String, BitmapDescriptor> _emojiMarkerCache = {};
+  
+  /// Son işlenen mood entries listesi (performans için)
+  List<MoodEntry>? _lastProcessedEntries;
+  
+  /// Marker'lar oluşturuldu mu?
+  bool _markersCreated = false;
   
   /// Harita başlangıç konumu
   static const CameraPosition _initialCameraPosition = CameraPosition(
@@ -189,24 +201,118 @@ class _MoodMapWidgetState extends State<MoodMapWidget> {
     }
   }
   
+  /// Konumu bulanıklaştırır (gizlilik için yaklaşık konum)
+  /// [seed] parametresi ile aynı konum için her zaman aynı offset üretir
+  LatLng _blurLocation(double lat, double lng, {int? seed}) {
+    // Seed değeri verilmemişse koordinatları kullan
+    final randomSeed = seed ?? (lat * 1000000 + lng * 1000000).toInt();
+    
+    // Sabit seed ile deterministik rastgele değerler üret
+    final offsetLat = ((randomSeed % 1000) - 500) / 100000; // ~500m max offset
+    final offsetLng = (((randomSeed * 7) % 1000) - 500) / 100000; // Farklı pattern için 7 ile çarp
+    
+    return LatLng(
+      lat + offsetLat,
+      lng + offsetLng,
+    );
+  }
+
+  /// Emoji için özel marker icon'u oluşturur (optimize edilmiş)
+  Future<BitmapDescriptor> _createEmojiMarker(String emoji) async {
+    try {
+      // Canvas boyutları - daha küçük boyut (performans için)
+      const double size = 80;
+      const double emojiSize = 40;
+      
+      // PictureRecorder ile canvas oluştur
+      final ui.PictureRecorder pictureRecorder = ui.PictureRecorder();
+      final Canvas canvas = Canvas(pictureRecorder);
+      
+      // Basit arka plan çemberi (gölge kaldırıldı)
+      final Paint backgroundPaint = Paint()
+        ..color = Colors.white
+        ..style = PaintingStyle.fill;
+      
+      final Paint borderPaint = Paint()
+        ..color = Colors.blue.shade600
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2; // Daha ince çerçeve
+      
+      // Arka plan çemberi
+      canvas.drawCircle(
+        const Offset(size / 2, size / 2),
+        emojiSize / 2,
+        backgroundPaint,
+      );
+      
+      // Çerçeve
+      canvas.drawCircle(
+        const Offset(size / 2, size / 2),
+        emojiSize / 2,
+        borderPaint,
+      );
+      
+      // Emoji metni çiz - daha küçük font boyutu (performans için)
+      final textPainter = TextPainter(
+        text: TextSpan(
+          text: emoji,
+          style: const TextStyle(
+            fontSize: 24, // Daha küçük font
+            color: Colors.black,
+          ),
+        ),
+        textDirection: TextDirection.ltr,
+      );
+      
+      textPainter.layout();
+      
+      // Emoji'yi merkeze yerleştir
+      final offset = Offset(
+        (size - textPainter.width) / 2,
+        (size - textPainter.height) / 2,
+      );
+      
+      textPainter.paint(canvas, offset);
+      
+      // Picture'ı image'e çevir
+      final ui.Picture picture = pictureRecorder.endRecording();
+      final ui.Image image = await picture.toImage(size.toInt(), size.toInt());
+      
+      // Image'ı byte array'e çevir
+      final ByteData? byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+      if (byteData == null) {
+        return BitmapDescriptor.defaultMarker;
+      }
+      
+      final Uint8List uint8List = byteData.buffer.asUint8List();
+      
+      return BitmapDescriptor.bytes(uint8List);
+    } catch (e) {
+      debugPrint('Emoji marker oluşturma hatası ($emoji): $e');
+      // Hata durumunda varsayılan marker döndür
+      return BitmapDescriptor.defaultMarker;
+    }
+  }
+
+  /// Marker'ların güncellenmesi gerekip gerekmediğini kontrol eder
+  bool _shouldUpdateMarkers(List<MoodEntry> newEntries) {
+    if (_lastProcessedEntries == null) return true;
+    if (_lastProcessedEntries!.length != newEntries.length) return true;
+    
+    // Entry ID'lerini karşılaştır
+    final lastIds = _lastProcessedEntries!.map((e) => e.id).toSet();
+    final newIds = newEntries.map((e) => e.id).toSet();
+    
+    return !lastIds.containsAll(newIds) || !newIds.containsAll(lastIds);
+  }
+  
   /// Harita işaretçilerini oluşturur
-  void _createMarkers(List<MoodEntry> moodEntries) {
+  Future<void> _createMarkers(List<MoodEntry> moodEntries) async {
     try {
       debugPrint('Marker\'lar oluşturuluyor... Toplam entry: ${moodEntries.length}');
       _markers.clear();
       
-      // Kullanıcının kendi konumunu ekle
-      if (_currentPosition != null) {
-        _markers.add(
-          Marker(
-            markerId: const MarkerId('current_location'),
-            position: LatLng(_currentPosition!.latitude, _currentPosition!.longitude),
-            infoWindow: const InfoWindow(title: 'Konumunuz'),
-            icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueBlue),
-          ),
-        );
-        debugPrint('Kullanıcı konumu marker\'ı eklendi');
-      }
+      // Kullanıcı konumu marker'ı kaldırıldı - sadece emoji marker'lar gösterilecek
       
       // Ruh hali girişlerini işaretçi olarak ekle
       for (final entry in moodEntries) {
@@ -220,47 +326,74 @@ class _MoodMapWidgetState extends State<MoodMapWidget> {
             if (locationParts.length == 2) {
               final lat = double.parse(locationParts[0]);
               final lng = double.parse(locationParts[1]);
-              position = LatLng(lat, lng);
+              // Konumu bulanıklaştır (gizlilik için) - entry ID'sini seed olarak kullan
+              position = _blurLocation(lat, lng, seed: entry.id.hashCode);
             } else {
               // Geçersiz konum formatı, varsayılan konum kullan
-              final random = DateTime.now().millisecondsSinceEpoch % 100;
               final lat = _currentPosition?.latitude ?? 41.0082;
               final lng = _currentPosition?.longitude ?? 28.9784;
-              position = LatLng(
-                lat + (random - 50) / 1000,
-                lng + (random - 50) / 1000,
+              position = _blurLocation(
+                lat,
+                lng,
+                seed: entry.id.hashCode,
               );
             }
           } catch (e) {
             // Konum parse edilemedi, varsayılan konum kullan
-            final random = DateTime.now().millisecondsSinceEpoch % 100;
             final lat = _currentPosition?.latitude ?? 41.0082;
             final lng = _currentPosition?.longitude ?? 28.9784;
-            position = LatLng(
-              lat + (random - 50) / 1000,
-              lng + (random - 50) / 1000,
+            position = _blurLocation(
+              lat,
+              lng,
+              seed: entry.id.hashCode,
             );
           }
           
-          // Emoji'ye göre renk belirle
-          double hue;
-          switch (entry.moodEmoji) {
-            case '😀':
-            case '😊':
-            case '🙂':
-              hue = BitmapDescriptor.hueGreen;
-              break;
-            case '😐':
-            case '🤔':
-              hue = BitmapDescriptor.hueYellow;
-              break;
-            case '😔':
-            case '😢':
-            case '😭':
-              hue = BitmapDescriptor.hueRed;
-              break;
-            default:
-              hue = BitmapDescriptor.hueViolet;
+          // Emoji marker oluştur veya cache'den al
+          BitmapDescriptor emojiIcon;
+          try {
+            if (_emojiMarkerCache.containsKey(entry.moodEmoji)) {
+              emojiIcon = _emojiMarkerCache[entry.moodEmoji]!;
+            } else {
+              emojiIcon = await _createEmojiMarker(entry.moodEmoji);
+              _emojiMarkerCache[entry.moodEmoji] = emojiIcon;
+            }
+          } catch (e) {
+            debugPrint('Emoji marker oluşturma hatası (${entry.moodEmoji}): $e');
+            // Hata durumunda emoji'ye göre renk belirle (fallback)
+            double hue;
+            switch (entry.moodEmoji) {
+              case '😀':
+              case '😊':
+              case '🙂':
+              case '😄':
+              case '😁':
+                hue = BitmapDescriptor.hueGreen;
+                break;
+              case '😐':
+              case '🤔':
+              case '😑':
+                hue = BitmapDescriptor.hueYellow;
+                break;
+              case '😔':
+              case '😢':
+              case '😭':
+              case '😞':
+              case '😟':
+                hue = BitmapDescriptor.hueRed;
+                break;
+              case '😴':
+              case '😪':
+                hue = BitmapDescriptor.hueViolet;
+                break;
+              case '😡':
+              case '😠':
+                hue = BitmapDescriptor.hueOrange;
+                break;
+              default:
+                hue = BitmapDescriptor.hueViolet;
+            }
+            emojiIcon = BitmapDescriptor.defaultMarkerWithHue(hue);
           }
           
           _markers.add(
@@ -268,16 +401,16 @@ class _MoodMapWidgetState extends State<MoodMapWidget> {
               markerId: MarkerId(entry.id),
               position: position,
               infoWindow: InfoWindow(
-                title: entry.moodEmoji,
+                title: '${entry.moodEmoji} Ruh Hali',
                 snippet: entry.description ?? 'Açıklama yok',
               ),
-              icon: BitmapDescriptor.defaultMarkerWithHue(hue),
+              icon: emojiIcon,
             ),
           );
         }
       }
       
-      debugPrint('Toplam ${_markers.length} marker oluşturuldu');
+      debugPrint('Toplam ${_markers.length} marker oluşturuldu (bulanıklaştırılmış konumlarla)');
       
       if (mounted) {
         setState(() {});
@@ -289,38 +422,70 @@ class _MoodMapWidgetState extends State<MoodMapWidget> {
   
   @override
   Widget build(BuildContext context) {
-    return BlocBuilder<MoodBloc, MoodState>(
-      builder: (context, state) {
-        // Sadece UserMoodEntriesLoaded state'inde marker'ları güncelle
-        if (state is UserMoodEntriesLoaded && _markers.isEmpty) {
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (mounted) {
-              _createMarkers(state.moodEntries);
-            }
-          });
+    return BlocListener<MoodBloc, MoodState>(
+      listener: (context, state) {
+        // Ruh hali eklendiğinde veya güncellendiğinde bugünkü verileri yenile
+        if (state is MoodEntryAdded || state is MoodEntryUpdated) {
+          _markersCreated = false; // Marker'ları yeniden oluşturmaya zorla
+          context.read<MoodBloc>().add(
+            GetMoodEntriesByDateRangeEvent(
+              userId: widget.userId,
+              startDate: DateTime.now().copyWith(hour: 0, minute: 0, second: 0, millisecond: 0),
+              endDate: DateTime.now().copyWith(hour: 23, minute: 59, second: 59, millisecond: 999),
+            ),
+          );
         }
-        
-        return Column(
-          children: [
-            // Bölgesel ruh hali istatistikleri
-            _buildMoodStats(context, state),
-            
-            // Harita
-            Expanded(
-              child: Container(
-                decoration: BoxDecoration(
-                  border: Border.all(color: Colors.grey.shade300),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(8),
-                  child: _buildGoogleMap(),
+      },
+      child: BlocBuilder<MoodBloc, MoodState>(
+        builder: (context, state) {
+          // Bugünkü ruh hali verilerini yükle (sadece bir kez)
+          if (state is! MoodEntriesByDateRangeLoaded && state is! MoodLoading && !_markersCreated) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (mounted) {
+                context.read<MoodBloc>().add(
+                  GetMoodEntriesByDateRangeEvent(
+                    userId: widget.userId,
+                    startDate: DateTime.now().copyWith(hour: 0, minute: 0, second: 0, millisecond: 0),
+                    endDate: DateTime.now().copyWith(hour: 23, minute: 59, second: 59, millisecond: 999),
+                  ),
+                );
+              }
+            });
+          }
+          
+          // Marker'ları sadece veri değiştiğinde oluştur
+          if (state is MoodEntriesByDateRangeLoaded && !_markersCreated) {
+            WidgetsBinding.instance.addPostFrameCallback((_) async {
+              if (mounted && _shouldUpdateMarkers(state.moodEntries)) {
+                await _createMarkers(state.moodEntries);
+                _lastProcessedEntries = List.from(state.moodEntries);
+                _markersCreated = true;
+              }
+            });
+          }
+          
+          return Column(
+            children: [
+              // Bölgesel ruh hali istatistikleri
+              _buildMoodStats(context, state),
+              
+              // Harita
+              Expanded(
+                child: Container(
+                  decoration: BoxDecoration(
+                    border: Border.all(color: Colors.grey.shade300),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: _buildGoogleMap(),
+                  ),
                 ),
               ),
-            ),
-          ],
-        );
-      },
+            ],
+          );
+        },
+      ),
     );
   }
   

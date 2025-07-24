@@ -34,6 +34,20 @@ class _MoodTrackingPageState extends State<MoodTrackingPage>
   /// Açıklama text controller
   final TextEditingController _descriptionController = TextEditingController();
   
+  /// Tab bazında yükleme durumları
+  final Map<int, bool> _tabDataLoaded = {
+    0: false, // Bugün
+    1: false, // Geçmiş
+    2: false, // İstatistikler
+    3: false, // Harita
+  };
+  
+  /// Son yüklenen veri zamanları (önbellekleme için)
+  final Map<int, DateTime> _lastLoadTimes = {};
+  
+  /// Veri önbellekleme süresi (dakika)
+  static const int _cacheValidityMinutes = 5;
+  
   @override
   void initState() {
     super.initState();
@@ -50,29 +64,97 @@ class _MoodTrackingPageState extends State<MoodTrackingPage>
     _loadDataForCurrentTab();
   }
   
-  /// Mevcut sekme için gerekli verileri yükle
+  /// Mevcut sekme için gerekli verileri yükle (optimize edilmiş)
   void _loadDataForCurrentTab() {
-    // Sadece ilk yüklemede veya tab değişiminde gerekli verileri yükle
+    final currentTab = _tabController.index;
     final currentState = context.read<MoodBloc>().state;
     
-    switch (_tabController.index) {
+    // Önbellekleme kontrolü
+    if (_isDataCacheValid(currentTab)) {
+      return;
+    }
+    
+    // Loading durumunda tekrar yükleme yapma
+    if (currentState is MoodLoading) {
+      return;
+    }
+    
+    switch (currentTab) {
       case 0: // Bugün
-        if (currentState is! TodayMoodEntryLoaded) {
+        if (!_tabDataLoaded[0]! || 
+            currentState is! TodayMoodEntryLoaded ||
+            _shouldRefreshTodayData(currentState)) {
           context.read<MoodBloc>().add(
             GetTodayMoodEntryEvent(userId: widget.userId),
           );
+          _tabDataLoaded[0] = true;
+          _lastLoadTimes[0] = DateTime.now();
         }
         break;
       case 1: // Geçmiş
       case 2: // İstatistikler
-      case 3: // Harita
-        if (currentState is! UserMoodEntriesLoaded) {
+        if (!_tabDataLoaded[currentTab]! || 
+            currentState is! UserMoodEntriesLoaded) {
           context.read<MoodBloc>().add(
             GetUserMoodEntriesEvent(userId: widget.userId),
           );
+          _tabDataLoaded[currentTab] = true;
+          _lastLoadTimes[currentTab] = DateTime.now();
+        }
+        break;
+      case 3: // Harita
+        if (!_tabDataLoaded[3]! || 
+            currentState is! MoodEntriesByDateRangeLoaded) {
+          context.read<MoodBloc>().add(
+            GetMoodEntriesByDateRangeEvent(
+              userId: widget.userId,
+              startDate: DateTime.now().copyWith(hour: 0, minute: 0, second: 0, millisecond: 0),
+              endDate: DateTime.now().copyWith(hour: 23, minute: 59, second: 59, millisecond: 999),
+            ),
+          );
+          _tabDataLoaded[3] = true;
+          _lastLoadTimes[3] = DateTime.now();
         }
         break;
     }
+  }
+  
+  /// Veri önbelleğinin geçerli olup olmadığını kontrol eder
+  bool _isDataCacheValid(int tabIndex) {
+    final lastLoadTime = _lastLoadTimes[tabIndex];
+    if (lastLoadTime == null) return false;
+    
+    final now = DateTime.now();
+    final difference = now.difference(lastLoadTime).inMinutes;
+    
+    return difference < _cacheValidityMinutes;
+  }
+  
+  /// Bugün verilerinin yenilenmesi gerekip gerekmediğini kontrol eder
+  bool _shouldRefreshTodayData(MoodState state) {
+    if (state is TodayMoodEntryLoaded) {
+      // Eğer bugünkü veri yoksa veya eski tarihli ise yenile
+      if (state.moodEntry == null) return true;
+      
+      final entryDate = state.moodEntry!.createdAt;
+      final today = DateTime.now();
+      
+      return !_isSameDay(entryDate, today);
+    }
+    return true;
+  }
+  
+  /// İki tarihin aynı gün olup olmadığını kontrol eder
+  bool _isSameDay(DateTime date1, DateTime date2) {
+    return date1.year == date2.year &&
+           date1.month == date2.month &&
+           date1.day == date2.day;
+  }
+  
+  /// Veri önbelleğini temizler (yeni veri eklendiğinde)
+  void _clearDataCache() {
+    _tabDataLoaded.updateAll((key, value) => false);
+    _lastLoadTimes.clear();
   }
   
   @override
@@ -114,25 +196,42 @@ class _MoodTrackingPageState extends State<MoodTrackingPage>
     );
   }
   
-  /// Harita sekmesi
+  /// Harita sekmesi (optimize edilmiş)
   Widget _buildMapTab() {
-    return BlocBuilder<MoodBloc, MoodState>(
-      builder: (context, state) {
-        // Sadece veri yüklenmemişse yükle
-        if (state is! UserMoodEntriesLoaded && state is! MoodLoading) {
-          context.read<MoodBloc>().add(
-            GetUserMoodEntriesEvent(userId: widget.userId),
-          );
-        }
-        
-        return MoodMapWidget(userId: widget.userId);
-      },
-    );
+    // Veri yükleme işlemi _loadDataForCurrentTab metodunda yapılıyor
+    return MoodMapWidget(userId: widget.userId);
   }
   
   /// Bugün sekmesi
   Widget _buildTodayTab() {
     return BlocConsumer<MoodBloc, MoodState>(
+      listenWhen: (previous, current) {
+        // Sadece belirli state değişikliklerinde dinle
+        return current is MoodEntryAdded || 
+               current is MoodEntryUpdated ||
+               current is MoodEntryDeleted ||
+               current is MoodError;
+      },
+      buildWhen: (previous, current) {
+        // Sadece bugün sekmesi ile ilgili state değişikliklerinde rebuild yap
+        if (current is TodayMoodEntryLoaded) return true;
+        if (current is MoodLoading && previous is! MoodLoading) return true;
+        if (current is MoodError) return true;
+        if (current is MoodEntryAdded || current is MoodEntryUpdated || current is MoodEntryDeleted) {
+          // Sadece bugünkü tarihle ilgili değişikliklerde rebuild yap
+          final today = DateTime.now();
+          if (current is MoodEntryAdded) {
+             return _isSameDay(current.moodEntry.createdAt, today);
+           }
+           if (current is MoodEntryUpdated) {
+             return _isSameDay(current.moodEntry.createdAt, today);
+           }
+          if (current is MoodEntryDeleted) {
+            return true; // Silme işleminde her zaman rebuild yap
+          }
+        }
+        return false;
+      },
       listener: (context, state) {
         if (state is MoodEntryAdded || state is MoodEntryUpdated) {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -142,7 +241,8 @@ class _MoodTrackingPageState extends State<MoodTrackingPage>
             ),
           );
           
-          // Verileri yenile
+          // Veri önbelleğini temizle ve verileri yenile
+          _clearDataCache();
           context.read<MoodBloc>().add(
             GetTodayMoodEntryEvent(userId: widget.userId),
           );
@@ -249,24 +349,37 @@ class _MoodTrackingPageState extends State<MoodTrackingPage>
               
               const SizedBox(height: 24),
               
-              // Ruh hali seçenekleri
-              Text(
-                'Ruh Hali Seçenekleri',
-                style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.bold,
+              // Hızlı ruh hali seçenekleri
+              if (state is! TodayMoodEntryLoaded || state.moodEntry == null) ...[
+                Text(
+                  'Hızlı Seçim',
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
-              ),
-              const SizedBox(height: 12),
-              
-              MoodSelector(
-                selectedMood: _selectedMoodEmoji,
-                onMoodSelected: (emoji) {
-                  setState(() {
-                    _selectedMoodEmoji = emoji;
-                  });
-                  _showMoodSelector(null);
-                },
-              ),
+                const SizedBox(height: 12),
+                
+                // Hızlı emoji seçenekleri
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  children: [
+                    _buildQuickMoodButton('😊', 'Mutlu'),
+                    _buildQuickMoodButton('😐', 'Nötr'),
+                    _buildQuickMoodButton('😢', 'Üzgün'),
+                    _buildQuickMoodButton('😡', 'Kızgın'),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                
+                // Daha fazla seçenek butonu
+                Center(
+                  child: OutlinedButton.icon(
+                    onPressed: () => _showMoodSelector(null),
+                    icon: const Icon(Icons.more_horiz),
+                    label: const Text('Daha Fazla Seçenek'),
+                  ),
+                ),
+              ],
             ],
           ),
         );
@@ -277,6 +390,13 @@ class _MoodTrackingPageState extends State<MoodTrackingPage>
   /// Geçmiş sekmesi
   Widget _buildHistoryTab() {
     return BlocBuilder<MoodBloc, MoodState>(
+      buildWhen: (previous, current) {
+        // Sadece geçmiş sekmesi ile ilgili state'lerde rebuild yap
+        return current is UserMoodEntriesLoaded ||
+               current is MoodLoading ||
+               current is MoodError ||
+               current is MoodEntryDeleted;
+      },
       builder: (context, state) {
         // Önce kullanıcının mood entries'lerini yükle
         if (state is! UserMoodEntriesLoaded && state is! MoodLoading) {
@@ -378,6 +498,12 @@ class _MoodTrackingPageState extends State<MoodTrackingPage>
   /// İstatistikler sekmesi
   Widget _buildStatsTab() {
     return BlocBuilder<MoodBloc, MoodState>(
+      buildWhen: (previous, current) {
+        // Sadece istatistikler sekmesi ile ilgili state'lerde rebuild yap
+        return current is UserMoodEntriesLoaded ||
+               current is MoodLoading ||
+               current is MoodError;
+      },
       builder: (context, state) {
         // Önce kullanıcının mood entries'lerini yükle
         if (state is! UserMoodEntriesLoaded && state is! MoodLoading) {
@@ -606,6 +732,57 @@ class _MoodTrackingPageState extends State<MoodTrackingPage>
             child: const Text('Sil', style: TextStyle(color: Colors.red)),
           ),
         ],
+      ),
+    );
+  }
+
+  /// Hızlı ruh hali butonu oluştur
+  Widget _buildQuickMoodButton(String emoji, String label) {
+    return GestureDetector(
+      onTap: () {
+        setState(() {
+          _selectedMoodEmoji = emoji;
+        });
+        _showMoodSelector(null);
+      },
+      child: Container(
+        width: 60,
+        height: 60,
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: _selectedMoodEmoji == emoji 
+                ? Theme.of(context).primaryColor 
+                : Colors.grey.shade300,
+            width: 2,
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.05),
+              blurRadius: 4,
+              offset: const Offset(0, 2),
+            ),
+          ],
+        ),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Text(
+              emoji,
+              style: const TextStyle(fontSize: 24),
+            ),
+            const SizedBox(height: 2),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 10,
+                color: Colors.grey.shade600,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
